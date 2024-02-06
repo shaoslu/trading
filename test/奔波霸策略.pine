@@ -1,0 +1,72 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © openbox6
+//@version=5
+import openbox6/zhuang/1 as lz
+strategy("奔波霸策略",
+         overlay=true,
+         initial_capital=10000,
+         default_qty_type=strategy.percent_of_equity,
+         backtest_fill_limits_assumption=1,
+         default_qty_value=100,
+         process_orders_on_close=true,
+         commission_value = 0.02)
+[basis, upper, lower] = lz.getBooling(close, 20, 2)  // 计算booling带
+plot(basis, title = '中轨')
+plot(upper, title = '上轨')
+plot(lower, title = '下轨')
+input_leverage = input.float(1, '倍数', step=0.5, group='杠杆')
+tradeType = input.string("双向开仓", title="交易方向", options=["只做多", "只做空", "双向开仓"], group='交易方向')
+startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
+endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
+isStartPeriodEnabledAndInRange = startPeriodTime <= time
+isEndPeriodEnabledAndInRange = endPeriodTime >= time
+isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
+
+
+// 初始化参数
+long_signal = false // 做多信号
+short_signal = false  // 空单信号
+max_trade_wait = 20 // 最大出场订单等待时间
+var trade_wait = 0  // 交易最大等待成交时间
+var is_trading = 0 // 是否处于交易区间, 1表示做多, -1表示做空, 0表示等待
+var stop_profit = 0.0 // 止盈
+var stop_loss = 0.0 // 止损
+
+// 1.当前K线收盘价大于开盘价，且最高价大于布林带上轨
+// 2.前一根K线收盘价大于开盘价，且最高价大于布林带上轨
+if close > open and high > upper and close[1] > open[1] and high[1] > upper[1]
+    is_trading := 1
+
+// 1.当前K线开盘价大于收盘价，且最低价小于布林带下轨
+// 2.前一根K线开盘价大于收盘价，且最低价小于布林带下轨
+if open > close and low < lower and open[1] > close[1] and low[1] < lower[1]
+    is_trading := -1
+
+
+plot(stop_profit > 0 ? stop_profit : na, title='止盈线', color=color.green, style = plot.style_linebr)
+plot(stop_loss > 0 ? stop_loss : na, title='止损线', color=color.red, style = plot.style_linebr)
+
+
+// 交易范围内
+if isInRange
+    if is_trading == 0 and strategy.position_size == 0
+        trade_wait := 0
+        is_trading := 0
+        stop_profit := 0.0
+        stop_loss := 0.0
+    if is_trading == 1 
+        trade_wait := trade_wait + 1
+        if strategy.position_size == 0
+            stop_profit := close[0] + (upper[0] - basis[0])
+            stop_loss := close[0] - (upper[0] - basis[0])
+            strategy.entry("做多", strategy.long, qty = input_leverage * strategy.equity / close) // 进场订单  
+            strategy.exit('做多平仓', '做多', comment_profit='做多止盈', comment_loss='做多止损', limit = stop_profit, stop = stop_loss) 
+        else if strategy.position_size > 0
+            if trade_wait >= max_trade_wait
+                strategy.close("做多", comment="做多超时平仓")
+                trade_wait := 0
+                is_trading := 0
+                stop_profit := 0.0
+                stop_loss := 0.0
+                
+

@@ -1,0 +1,50 @@
+
+
+//@version=5
+indicator(title='练习:寻找高低点划线', overlay=true)
+
+barnum = input.int(defval = 4, title = "左右K线数量", minval =  2)
+
+// 最近一次高点的K线序号
+var timeHigh = bar_index
+// 最近一次低点的K线序号
+var timeLow = bar_index
+// 最近一次高点的价格
+var lastHigh = 0.0
+// 最近一次低点的价格
+var lastLow = high*100
+
+// 寻找每个周期上的最高点
+cond = high[barnum] == ta.highest(high, barnum*2+1) and (timeHigh<timeLow or high[barnum]>lastHigh)
+// 寻找每个周期上的最低点
+cond2 = low[barnum] == ta.lowest(low, barnum*2+1) and (timeLow<timeHigh or low[barnum]<lastLow)
+
+if cond
+    HigherThanLastHigh = timeHigh>timeLow and high[barnum]>lastHigh
+    timeHigh := bar_index-barnum
+    lastHigh := high[barnum]
+    labelh = label.new(x=bar_index-barnum, y=na, text=str.tostring(timeHigh), 
+             size=size.tiny, color=#EEEEEE, textcolor=color.red, 
+             yloc=yloc.abovebar, style=label.style_label_down)
+    if HigherThanLastHigh
+        label.delete(labelh[1])
+    
+
+if cond2
+    LowerThanLastLow = timeLow>timeHigh and low[barnum]<lastLow
+    timeLow:=bar_index-barnum
+    lastLow:=low[barnum]
+    lablel = label.new(x=bar_index-barnum, y=na, text=str.tostring(timeLow), 
+             size=size.tiny, color=#EEEEEE, textcolor=color.green, 
+             yloc=yloc.belowbar, style=label.style_label_up
+             )
+
+    if LowerThanLastLow
+        label.delete(lablel[1])
+
+
+
+
+
+
+

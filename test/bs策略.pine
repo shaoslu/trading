@@ -1,0 +1,383 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Uncle-Gua
+
+//本策略可以不用分段止盈，ETH 1h下，纯粹的BULL开多，BEAR开空就可以实现年化100%以上的盈利。
+//但是分段止盈，可以降低风险，同时在大趋势时trail模式下，能多吃很多利润
+//在一个多头周期内，止盈位置不同，可能会影响下一次开仓位置，使用仓位控制判断的。可以参照v5 indicator，每一个绿色三角都可能开多，红色都可能开空。
+//本策略是趋势策略，会不停追，那么就有时候会地板空（高点多），试过RSI等很多指标避免，效果都不是很好。
+//释怀了之后就可以认为震荡赚不到钱，无所谓了，大趋势时候会顶着背离冲，多赚很多。震荡时可以人工干预一点。
+//@version=5
+strategy(title='bs策略', overlay=true, initial_capital=1000, default_qty_type=strategy.cash, default_qty_value=1000, commission_type=strategy.commission.percent, commission_value=0.04,use_bar_magnifier=false)
+
+start           = input.time(timestamp('2020-01-01T00:00:00'), group='Back Test', title='Start')
+finish          = input.time(timestamp('2030-12-31T00:00:00'), group='Back Test', title='Finish')
+window          = time >= start and time <= finish ? true : false
+
+
+// *****************************************************************************
+// *                                    Functions                              *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+// 因为所有函数使用都没有跨周期，所以没有做无重绘处理。
+fn_zigzag(_momentum_direction) =>
+    zz_goingup = _momentum_direction == 1
+    zz_goingdown = _momentum_direction == -1
+    zz_peak = float(na)
+    zz_bottom = float(na)
+    zz_peak := high > zz_peak[1] and zz_goingup or zz_goingdown[1] ? high : nz(zz_peak[1])
+    zz_bottom := low < zz_bottom[1] and zz_goingdown or zz_goingup[1] ? low : nz(zz_bottom[1])
+    zigzag = zz_goingup and zz_goingdown[1] ? zz_bottom[1] : zz_goingup[1] and zz_goingdown ? zz_peak[1] : na
+    zigzag
+
+fn_rsi(src, len, mtf)=>
+    change = src - src[mtf]
+
+    up = math.max(change, 0)
+    dn =-math.min(change, 0)
+
+    up_change = ta.rma(up, (len * mtf))
+    dn_change = ta.rma(dn, (len * mtf))
+    
+    rsi = dn_change == 0 ? 100 : up_change == 0 ? 0 : 100 - (100 / (1 + up_change / dn_change))
+
+// 14, 5, 8, 4.3
+fn_qqe(len, mtf, smooth, mult)=>
+    wilders =  len * 2 - 1 
+
+    up = 0.0
+    up_rsi = fn_rsi(low, len, mtf)
+    up_ema = ta.ema(up_rsi, smooth)
+    up_atr = math.abs(up_ema[1] - up_ema)
+    up_diff = ta.ema(ta.ema(up_atr, wilders), wilders) * mult
+    up_ma = up_ema - up_diff
+    up := up_ema[1] > up[1] and up_ema > up[1] ? math.max(up_ma, up[1]) : up_ma
+
+    dn = 0.0
+    dn_rsi = fn_rsi(high, len, mtf)
+    dn_ema = ta.ema(dn_rsi, smooth)
+    dn_atr = math.abs(dn_ema[1] - dn_ema)
+    dn_diff = ta.ema(ta.ema(dn_atr, wilders), wilders) * mult
+    dn_ma = dn_ema + dn_diff
+    dn := dn_ema[1] < dn[1] and dn_ema < dn[1] ? math.min(dn_ma, dn[1]) : dn_ma
+    
+    qqe_up = dn_ema > dn[1] and dn_ema[1] <= dn[2] //ta.crossover(dn_ema, dn[1])
+    qqe_dn = up_ema < up[1] and up_ema[1] >= up[2] //ta.crossunder(up_ema, up[1])
+    [qqe_up, qqe_dn]
+
+fn_adx(len, smooth) =>
+    up      =  ta.change(high)
+    dn      = -ta.change(low)
+    pdm     = na(up) ? na : up > dn and up > 0 ? up : 0
+    mdm     = na(dn) ? na : dn > up and dn > 0 ? dn : 0
+    atr     = ta.atr(len)
+    plus    = fixnan(100 * ta.rma(pdm, len) / atr)
+    minus   = fixnan(100 * ta.rma(mdm, len) / atr)
+    sum     = plus + minus
+    adx     = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), smooth)
+    [plus, minus, adx]
+
+fn_covwma(a, b) =>
+    cov    = ta.stdev(a, b)/ta.sma(a, b)
+    cw     = a*cov
+    covwma = math.sum(cw, b)/math.sum(cov, b)
+
+fn_ssl(length) =>
+    hh = ta.hma(high, length)
+    ll = ta.hma(low, length)
+
+    hlv = int(na)
+    hlv := close > hh ? 1 : close < ll ? -1 : hlv[1]
+    ssl = hlv < 0 ? hh : ll
+
+// *****************************************************************************
+// *                                      ADX                                  *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+ADX_Group       = 'ADX'
+ADX_Length      = input.int(14,             title='Length',             group=ADX_Group,    minval=1,       step=1)
+ADX_Smooth      = input.int(14,             title='Smooth',             group=ADX_Group,    minval=1,       step=1)
+ADX_Range       = input.float(25,           title='Range',              group=ADX_Group,    minval=1,       step=1)
+ADX_Trend       = input.float(50,           title='Trend',              group=ADX_Group,    minval=1,       step=1)
+
+// ADX指标一般是用于趋势和震荡的判断
+// 一般ADX > 50认为是大趋势，小于25是震荡。
+// +DI > -DI是上涨，否则是下跌
+[ADX_plus, ADX_minus, ADX] = fn_adx(ADX_Length, ADX_Smooth)
+
+
+// *****************************************************************************
+// *                                      SSL                                  *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+SSL_Group       = 'SSL'
+SSL_Length      = input.int(55,             title='Length',             group=SSL_Group,    minval=1,       step=10)
+
+// SSL核心是HMA，这是均线指标，入场非常准，但是出场迟缓
+SSL = fn_ssl(SSL_Length)
+
+SSL_color = close > SSL ? #00c3ff : close < SSL ? #ff0062 : na
+plot(SSL, title='SSL', linewidth=3, color=SSL_color)
+
+
+// *****************************************************************************
+// *                                   Squeeze Box                             *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+BOX_Group       = 'Squeeze Box'
+BOX_Period      = input.int(24,             title='Periods',            group=BOX_Group,    minval=1,       step=1)
+BOX_Deviation   = input.int(3,              title='Deviation',          group=BOX_Group,    minval=1,       step=1)
+BOX_Threshold   = input.int(50,             title='Threshold',          group=BOX_Group,    minval=1,       step=1)
+
+// 通过挤压方式计算箱体
+// 理论上，在没有外界干扰情况下，价格应该实在箱体内部震荡，一旦突破箱体，会急速拉升或下跌
+BOX_src = hlc3
+BOX_ma = fn_covwma(BOX_src, BOX_Period)
+BOX_bu = BOX_ma + ta.stdev(BOX_src, BOX_Period)*BOX_Deviation
+BOX_bd = BOX_ma - ta.stdev(BOX_src, BOX_Period)*BOX_Deviation
+
+//Bandwidth
+BOX_bw = (BOX_bu - BOX_bd)
+
+//Squeeze Percentage
+BOX_buh = ta.highest(BOX_bu, BOX_Period)
+BOX_bdl = ta.lowest(BOX_bd, BOX_Period)
+BOX_rng = BOX_buh - BOX_bdl
+BOX_sqp = 100*BOX_bw/BOX_rng
+
+//Squeeze Box
+BOX_sqz  = (BOX_sqp < BOX_Threshold) ? 1 : 0
+BOX_hh   = ta.highest(BOX_src, BOX_Period)
+BOX_boxh = BOX_sqz ? BOX_hh : BOX_src
+BOX_ll   = ta.lowest(BOX_src, BOX_Period)
+BOX_boxl = BOX_sqz ? BOX_ll : BOX_src
+BOX_bh   = ta.valuewhen(BOX_sqz, BOX_boxh, 1)
+BOX_bl   = ta.valuewhen(BOX_sqz, BOX_boxl, 1)
+
+//Colors
+boxcolor = BOX_src > BOX_bh ? color.lime : BOX_src < BOX_bl ? color.red : color.orange
+bhcolor  = BOX_sqz ? boxcolor : na
+blcolor  = BOX_sqz ? boxcolor : na
+
+bhplot = plot(BOX_bh, color=color.new(boxcolor, 50), title="Box High Level")
+blplot = plot(BOX_bl, color=color.new(boxcolor, 50), title="Box Low Level")
+fill(bhplot, blplot, color=color.new(boxcolor, 87), title="Box Fill")
+
+
+// *****************************************************************************
+// *                                      QQE                                  *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+QQE_Group       = 'QQE'
+QQE_Length      = input.int(14,             title='RSI Length',         group=QQE_Group,    minval=1,       step=1)
+QQE_Mtf         = input.int(5,              title='MTF Mult',           group=QQE_Group,    minval=1,       step=1)
+QQE_Smooth      = input.int(8,              title='RSI Smooth',         group=QQE_Group,    minval=1,       step=1)
+QQE_Mult        = input.float(4.3,          title='QQE Mult',           group=QQE_Group,    minval=1,       step=0.1)
+
+// 计算QQE，以便后面ZIGZAG使用
+[QQE_up, QQE_dn] = fn_qqe(QQE_Length, QQE_Mtf, QQE_Smooth, QQE_Mult)
+
+QQE_direction = 0
+QQE_direction := QQE_up ? 1 : QQE_dn ? -1 : nz(QQE_direction[1])
+
+
+// *****************************************************************************
+// *                                    QQE ZONE                               *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+ZON_Group       = 'QQE ZONE'
+ZON_Length      = input.int(5,              title='Length',             group=ZON_Group,    minval=1,       step=1)
+ZON_Upper       = input.float(75,           title='Upper',              group=ZON_Group,    minval=50,      maxval=100,     step=1)
+ZON_Lower       = input.float(22,           title='Lower',              group=ZON_Group,    minval=0,       maxval=50,      step=1)
+
+// 这里主要计算是否是force的下跌还是下降
+qqe_rsi = ta.rsi(close, ZON_Length)
+barssince_qqe_up = ta.barssince(QQE_up)
+barssince_qqe_dn = ta.barssince(QQE_dn)
+barssince_rsi_up = ta.barssince(qqe_rsi > ZON_Upper)
+barssince_rsi_dn = ta.barssince(qqe_rsi < ZON_Lower)
+qqe_was_force_up = QQE_dn and barssince_qqe_up[1] >= barssince_rsi_up[1]
+qqe_was_force_dn = QQE_up and barssince_qqe_dn[1] >= barssince_rsi_dn[1]
+zzcolor = qqe_was_force_up ? color.lime : qqe_was_force_dn ? color.red : color.black
+
+// 对QQE Direction做zigzag，也就是高低点。入场比较迟缓。
+ZigZag = fn_zigzag(QQE_direction)
+plot(ZigZag, linewidth=2, color=zzcolor, title='ZigZag', style=plot.style_line)
+
+
+// *****************************************************************************
+// *                                       Box                                 *
+// *                                   Box Scalper                             *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+var float zz_top = high
+var float zz_bot = low
+
+//根据zigzag计算支撑和阻力位置
+ph = ta.valuewhen(QQE_dn, ZigZag, 0)
+pl = ta.valuewhen(QQE_up, ZigZag, 0)
+
+if QQE_dn
+    zz_top := nz(high > ph ? high : ph, zz_top[1])
+if QQE_up
+    zz_bot := nz(low < pl ? low : pl, zz_bot[1])
+
+plot(zz_top, color=color.aqua, style=plot.style_cross, title='Resistance')
+plot(zz_bot, color=color.yellow, style=plot.style_cross, title='Support')
+
+
+// *****************************************************************************
+// *                                Position Setting                           *
+// *                                  Box Scalper                              *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+PS_Group        = 'POSITION'
+PS_Expect       = input.string('BOTH',      title='Expect',             group=PS_Group,     options=['BOTH','LONG', 'SHORT']) // 默认是双向持仓，可以锁仓
+PS_Mode         = input.string('Capital',   title='Mode',               group=PS_Group,     options=['Capital', 'Equity'])    // 仓位模式是全仓还是滚仓
+PS_Initial      = input.int(100,            title='Initial(%)',         group=PS_Group,     minval=1,       maxval=200)       // 初始仓位是initial_capital的百分比
+
+
+// *****************************************************************************
+// *                                  Stop Loss                                *
+// *                                Super Scalper                              *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+TSL_Group       = 'Stop Loss'
+TSL_SL1         = input.float(3.1,          title='Stop Loss Min(%)',   group=TSL_Group,    minval=0,       step=0.1) // 止损的最小值，因为我们的止损是自动计算的，一般认为，当市场没有流动性时，止损太小会频繁止损。
+TSL_SL2         = input.float(9.9,          title='Stop Loss Max(%)',   group=TSL_Group,    minval=0,       step=0.1) // 硬止损，如果达到这个值，什么都不考虑，直接平仓，预防黑天鹅。
+
+
+// *****************************************************************************
+// *                                  Take Profit                              *
+// *                                  Box Scalper                              *
+// *                              @Author : Uncle-Gua                          *
+// *                                                                           *
+// *****************************************************************************
+// -------------|---------------------------|---------------------------|-------------------|---------------|
+TP_Group        = 'Take Profit'
+//止盈模式，追踪止盈还是固定止盈。如果是固定，当达到止盈目标时，直接止盈。trail模式下，当达到止盈并不立即执行，而是等到最高点回调Trail Offset才去止盈。大趋势有利，震荡有弊。
+TP_Mode         = input.string('Trail',     title='Mode',               group=TP_Group,     options=['Trail', 'Fixed'])
+TP_Ts1          = input.float(2.1,          title='Profit Target 1(%)', group=TP_Group,     minval=0,       step=0.1)  //止盈的最小值
+TP_Ts2          = input.float(1.0,          title='Profit Target 2(%)', group=TP_Group,     minval=0,       step=0.1)  //止盈的最大值
+TP_To           = input.float(0.1,          title='Trail Offset(%)',    group=TP_Group,     minval=0,       step=0.1)  //追踪止盈的幅度
+
+//这里是把百分比全部转换成点数
+PIP_ts1         = close * TP_Ts1 / syminfo.mintick / 100
+PIP_ts2         = close * TP_Ts2 / syminfo.mintick / 100
+PIP_to          = close * TP_To / syminfo.mintick / 100
+PIP_tp1         = TP_Mode == 'Trail' ? na : PIP_ts1 //这里是代表当在trail时，值是na，那么就会启用追踪。当时固定止盈时，其值等于追踪的开始值，因为到了这个值就止盈了，所以追踪就没用了。
+PIP_tp2         = TP_Mode == 'Trail' ? na : PIP_ts2
+
+TICKER = syminfo.prefix + ':' + syminfo.ticker
+
+plot(strategy.position_avg_price, linewidth=2, color=color.white, style=plot.style_linebr, title='Average Price')
+
+//入场条件：均线QQE和FORCE，周末不出趋势不乱开单，回穿箱体
+week = dayofweek
+BULL = (close > SSL and QQE_up and not qqe_was_force_dn and (week != 7 and week != 1 or ADX > ADX_Trend)) or (close > SSL and ta.crossover(close, BOX_bl))
+BEAR = (close < SSL and QQE_dn and not qqe_was_force_up and (week != 7 and week != 1 or ADX > ADX_Trend)) or (close < SSL and ta.crossunder(close, BOX_bh))
+
+//sign是符号，1或-1，ROE是盈利百分比（你仓位10倍杠杆，那还要*10，但是我们仅仅计算1倍）。 **但是代码中写了好像没啥用
+sign = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : na
+ROE = sign * (close - strategy.position_avg_price) / strategy.position_avg_price * 100
+
+// 出现开空信号，在锁多模式下，立刻平仓
+if strategy.position_size > 0 and PS_Expect == 'LONG' and BEAR
+    SIZE = str.tostring(math.abs(strategy.position_size))
+    cl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"CL-L"}'
+    strategy.close('LONG', comment='CL-L', alert_message=cl_msg)
+
+// 出现开空信号，在锁空模式下，立刻平仓
+if strategy.position_size < 0 and PS_Expect == 'SHORT' and BULL
+    SIZE = str.tostring(math.abs(strategy.position_size))
+    cl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"CL-S"}'
+    strategy.close('SHORT', comment='CL-S', alert_message=cl_msg)
+
+
+currentMinute = minute(time)
+
+
+// 持有多头时，根据ADX重新设置止盈。
+// 根据支撑阻力重设止损
+// ******每根K线都重新设置*********
+if strategy.position_size > 0 and (currentMinute == 0)
+    redline1 = strategy.position_avg_price * (100 - TSL_SL1) / 100
+    redline2 = strategy.position_avg_price * (100 - TSL_SL2) / 100
+    stoploss = math.max(math.min(zz_bot, redline1), redline2)
+    SIZE = str.tostring(math.abs(strategy.position_size))
+    PIP_tp = ADX > ADX_Range and ADX_plus > ADX_minus and ADX > ADX[1] and ADX < ADX_Trend ? PIP_tp1 : PIP_tp2
+    PIP_ts = ADX > ADX_Range and ADX_plus > ADX_minus and ADX > ADX[1] and ADX < ADX_Trend ? PIP_ts1 : PIP_ts2
+    tp_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"TP-L"}'
+    sl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"SL-L"}'
+    tr_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"TR-L"}'
+    strategy.exit('CL-L', 'LONG', comment_profit='TP-L', comment_loss='SL-L', comment_trailing='TR-L', stop=stoploss, profit=PIP_tp, trail_points=PIP_ts, trail_offset=PIP_to, alert_profit=tp_msg, alert_loss=sl_msg, alert_trailing=tr_msg)
+
+// 持有空头时，根据ADX重新设置止盈。
+// 根据支撑阻力重设止损
+// ******每根K线都重新设置**********
+if strategy.position_size < 0 and (currentMinute == 0)
+    redline1 = strategy.position_avg_price * (100 + TSL_SL1) / 100
+    redline2 = strategy.position_avg_price * (100 + TSL_SL2) / 100
+    stoploss = math.min(math.max(zz_top, redline1), redline2)
+    SIZE = str.tostring(math.abs(strategy.position_size))
+    PIP_tp = ADX > ADX_Range and ADX_plus < ADX_minus and ADX > ADX[1] and ADX < ADX_Trend ? PIP_tp1 : PIP_tp2
+    PIP_ts = ADX > ADX_Range and ADX_plus < ADX_minus and ADX > ADX[1] and ADX < ADX_Trend ? PIP_ts1 : PIP_ts2
+    tp_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"TP-S"}'
+    sl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"SL-S"}'
+    tr_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"TR-S"}'
+    strategy.exit('CL-S', 'SHORT', comment_profit='TP-S', comment_loss='SL-S', comment_trailing='TR-S', stop=stoploss, profit=PIP_tp, trail_points=PIP_ts, trail_offset=PIP_to, alert_profit=tp_msg, alert_loss=sl_msg, alert_trailing=tr_msg)
+
+// 开多
+// 止盈按最大的值设置
+// 有时候大趋势下，刚开单，一根K线就砸了2.1%，这个就吃到了。
+if window and strategy.position_size <= 0 and PS_Expect != 'SHORT' and BULL
+    size = (PS_Mode == 'Capital' ? strategy.initial_capital : strategy.equity) / close * (PS_Initial / 100)
+    SIZE = str.tostring(size)
+    op_msg = '{"symbol":"'+TICKER+'","action":"OPEN","side":"LONG","size":' + SIZE + ',"comment":"OP-L@' + str.tostring(close, format.mintick) + '"}'
+    strategy.entry('LONG', strategy.long, qty=size, comment='OP-L@' + str.tostring(close, format.mintick), alert_message=op_msg)
+    redline1 = close * (100 - TSL_SL1) / 100
+    redline2 = close * (100 - TSL_SL2) / 100
+    stoploss = math.max(math.min(zz_bot, redline1), redline2) //止损按支撑线，最小值，最大值计算
+    tp_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"TP-L"}'
+    sl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"SL-L"}'
+    tr_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"TR-L"}'
+    strategy.exit('CL-L', 'LONG', comment_profit='TP-L', comment_loss='SL-L', comment_trailing='TR-L', stop=stoploss, profit=PIP_tp1, trail_points=PIP_ts1, trail_offset=PIP_to, alert_profit=tp_msg, alert_loss=sl_msg, alert_trailing=tr_msg)
+
+// 开空
+// 止盈按最大的值设置
+// 有时候大趋势下，刚开单，一根K线就砸了2.1%，这个就吃到了。
+if window and strategy.position_size >= 0 and PS_Expect != 'LONG' and BEAR
+    size = (PS_Mode == 'Capital' ? strategy.initial_capital : strategy.equity) / close * (PS_Initial / 100)
+    SIZE = str.tostring(size)
+    op_msg = '{"symbol":"'+TICKER+'","action":"OPEN","side":"SHORT","size":' + SIZE + ',"comment":"OP-S@' + str.tostring(close, format.mintick) + '"}'
+    strategy.entry('SHORT', strategy.short, qty=size, comment='OP-S@' + str.tostring(close, format.mintick), alert_message=op_msg)
+    redline1 = close * (100 + TSL_SL1) / 100
+    redline2 = close * (100 + TSL_SL2) / 100
+    stoploss = math.min(math.max(zz_top, redline1), redline2) //止损按支撑线，最小值，最大值计算
+    tp_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"TP-S"}'
+    sl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"SL-S"}'
+    tr_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"TR-S"}'
+    strategy.exit('CL-S', 'SHORT', comment_profit='TP-S', comment_loss='SL-S', comment_trailing='TR-S', stop=stoploss, profit=PIP_tp1, trail_points=PIP_ts1, trail_offset=PIP_to, alert_profit=tp_msg, alert_loss=sl_msg, alert_trailing=tr_msg)
