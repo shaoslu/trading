@@ -46,7 +46,7 @@ var test = 0.0 // 用户测试程序bug
 // 上一根K线的收盘价 > 上一根K线的开盘价
 // 当前K线的最低价 > 当前K线的布林带中轨
 // is_trading == 0 表示当前没有交易
-if (close[0] > open[0]) > (upper[1] - basis[1]) and close[1] > open[1] and low[0] > basis[0] and is_trading == 0 and tradeType != '只做空'
+if (close[0] - open[0]) > (upper[1] - basis[1]) and close[1] > open[1] and low[0] > basis[0] and is_trading == 0 and tradeType != '只做空'
     long_signal := true
     is_trading := 1
 

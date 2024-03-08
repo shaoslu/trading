@@ -1,0 +1,99 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © openbox6
+//@version=5
+import openbox6/zhuang/29 as lz
+strategy("周末策略",
+         overlay=true,
+         initial_capital=2000,
+         default_qty_type=strategy.percent_of_equity,
+         backtest_fill_limits_assumption=1,
+         default_qty_value=100,
+         process_orders_on_close=true,
+         commission_value = 0.04)
+
+// 输入参数
+startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
+endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
+isStartPeriodEnabledAndInRange = startPeriodTime <= time
+isEndPeriodEnabledAndInRange = endPeriodTime >= time
+// 交易时间段
+isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
+input_leverage = input.float(1.5, title = "杠杆倍数", step = 0.5)
+// 交易类型
+tradeType = input.string("全部", title="交易类型", options=["全部", "震荡", "突破"])
+// 布林带参数
+bullLength = input.int(25, title = '布林带长度')
+bullMulti = input.float(2.0, title = '布林带倍数')
+maLength = input.int(89, title = '趋势平均线长度')
+
+
+// 初始化上一次出场的bar索引
+var lastExitBar = 0
+// 止损百分比
+st_pt_percent = 0.05
+// 止盈百分比
+st_p_percent = 0.03
+long_signal = false // 做多信号
+short_signal = false  // 空单信号
+
+// ##############################################################
+
+// 布林带
+[basis, upper, lower] = lz.getBooling(close, bullLength, bullMulti)
+plot(basis, title = "中轨")
+plot(upper, title = "上轨")
+plot(lower, title = "下轨")
+
+ma200 = ta.sma(close, maLength)
+plot(ma200, title = '趋势平均线', color = color.yellow, linewidth = 2)
+
+// 平均成交量
+volSma = ta.sma(volume, 20)
+
+// 十字星
+isDoji = math.abs(open-close) <= (high-low) * 0.1
+
+if (dayofweek == 7 or dayofweek == 1) and ta.crossover(close, upper) and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and close < ma200 and tradeType != '突破' and short_signal == false
+    lastExitBar := bar_index
+    short_signal := true
+    strategy.entry('做空', strategy.short, qty = input_leverage * strategy.equity / close[0], comment='震荡做空')
+    
+
+if (dayofweek == 7 or dayofweek == 1) and ta.crossunder(close, lower) and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and close > ma200 and tradeType != '突破' and long_signal ==false
+    lastExitBar := bar_index
+    long_signal := true
+    strategy.entry('做多', strategy.long, qty = input_leverage * strategy.equity / close[0], comment='震荡做多')
+    
+
+if (dayofweek == 7 or dayofweek == 1) and close[0] > upper[0] and close[0] > open[0] and volume > volSma*3 and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and close > ma200 and tradeType != '震荡' and long_signal == false
+    lastExitBar := bar_index
+    long_signal := true
+    strategy.entry('做多', strategy.long, qty = input_leverage * strategy.equity / close[0], comment='突破上轨做多')
+    
+
+if (dayofweek == 7 or dayofweek == 1) and close[0] < lower[0] and close[0] < open[0] and volume > volSma*3 and not isDoji and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and close < ma200 and tradeType != '震荡' and short_signal == false
+    lastExitBar := bar_index
+    short_signal := true
+    strategy.entry('做空', strategy.short, qty = input_leverage * strategy.equity / close[0], comment='突破下轨做空')
+    
+
+
+
+// strategy.exit('做空止损', '做空', stop = strategy.position_avg_price * (1 + st_pt_percent), limit = close * (1 - st_p_percent), comment_profit='做空止盈', comment_loss='做空止损')
+
+// strategy.exit('做多止损', '做多', stop = strategy.position_avg_price * (1 - st_pt_percent), limit = close * (1 + st_p_percent), comment_profit='做多止盈', comment_loss='做多止损')
+
+// if strategy.position_size > 0 and close >= upper
+//     strategy.close('做多', comment = '做多平仓')
+
+// if strategy.position_size < 0 and close <= lower
+//     strategy.close('做空', comment = '做空平仓')
+
+
+
+if strategy.position_size > 0
+    strategy.exit('做多平仓', '做多', stop = strategy.position_avg_price * (1 - st_pt_percent), trail_points = strategy.position_avg_price * st_p_percent / syminfo.mintick, trail_offset = strategy.position_avg_price * 0.002 / syminfo.mintick)
+
+if strategy.position_size < 0
+    strategy.exit('做空平仓', '做空', stop = strategy.position_avg_price * (1 + st_pt_percent), trail_points = strategy.position_avg_price * st_p_percent / syminfo.mintick, trail_offset = strategy.position_avg_price * 0.002 / syminfo.mintick)
+

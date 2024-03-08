@@ -1,0 +1,133 @@
+// This Pine Script™ code is subject to the terms of the Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © EliCobra
+
+//@version=5
+strategy("波浪趋势策略",
+         overlay=true,
+         initial_capital=2000,
+         default_qty_type=strategy.percent_of_equity,
+         backtest_fill_limits_assumption=1,
+         default_qty_value=100,
+         process_orders_on_close=true,
+         commission_value = 0.04)
+
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+
+type osc
+    float o = na
+    float s = na
+    float h = na
+
+type alerts
+    bool  s = na
+    bool  b = na
+    bool  u = na
+    bool  d = na
+
+type prompt
+    string s = ''
+    bool   c = false
+
+method any(alerts a) =>
+    string s = switch
+        a.s => 'OS Signal'    
+        a.b => 'OB Signal'    
+        a.u => 'Bullish Trend'
+        a.d => 'Bearish Trend'
+
+        =>      na
+
+    prompt.new(s, not na(s))
+
+method src(bar b, simple string src) =>
+    float x = switch src
+        'open'  =>          b.o
+        'high'  =>          b.h
+        'low'   =>          b.l
+        'close' =>          b.c
+        'oc2'   => math.avg(b.o, b.c          )
+        'hl2'   => math.avg(b.h, b.l          )
+        'hlc3'  => math.avg(b.h, b.l, b.c     )
+        'ohlc4' => math.avg(b.o, b.h, b.l, b.c)
+        'hlcc4' => math.avg(b.h, b.l, b.c, b.c)
+
+    x
+
+method stdev(float src, simple int len) =>
+    float sq  = 0.
+    float psq = 0.
+    float sum = 0.
+    
+    for k = 0 to len - 1
+        val  = nz(src[k])
+        psq :=        sq
+        sq  += (val - sq) / (1   + k  )
+        sum += (val - sq) * (val - psq)
+        
+    math.sqrt(sum / (len - 1))
+
+method wave(bar b, simple string src, simple int clen, simple int alen, simple int slen) =>
+    float x = b .src  (src                    )
+    float m = ta.ema  (x                , clen)
+    float d = x .stdev(                   clen)
+    float o = ta.ema  ((x - m) / d * 100, alen)
+    float s = ta.sma  (o                , slen)
+
+    osc.new(o, s, o - s)
+
+
+// 输入参数
+startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
+endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
+isStartPeriodEnabledAndInRange = startPeriodTime <= time
+isEndPeriodEnabledAndInRange = endPeriodTime >= time
+// 交易时间段
+isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
+input_leverage = input.float(1.5, title = "杠杆倍数", step = 0.5)
+maLength = input.int(100, title = '趋势平均线长度')
+
+
+const string gw = "WaveTrend"
+src  = input.string('hlc3', "Source"             , ['open', 'high', 'low', 'close', 'oc2', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'],               group = gw)
+clen = input.int   (10    , "Channel Length"     ,  7,                                 50,                               1 ,               group = gw)
+alen = input.int   (21    , "Average Length"     ,  7,                                 50,                               1 ,               group = gw)
+slen = input.int   (4     , "Signal  Length"     ,  2,                                  7,                               1 ,               group = gw)
+
+bar b  = bar.new (                     )
+osc wt = b.wave(src, clen, alen, slen)
+
+
+// 止损百分比
+st_pt_percent = 0.04
+// 止盈百分比
+st_p_percent = 0.02
+
+// 趋势均线
+ma200 = ta.sma(close, maLength)
+plot(ma200, title = '趋势平均线', color = color.yellow, linewidth = 2)
+
+if wt.o < -100 and strategy.position_size == 0 and isInRange
+    strategy.entry('做多', strategy.long, qty = input_leverage * strategy.equity / close[0])
+
+
+if ta.crossover(wt.o, 110) and strategy.position_size > 0
+    strategy.close('做多', comment = '做多平仓')
+
+
+// if ta.crossunder(wt.o, 110) and strategy.position_size == 0 and isInRange and close > ma200
+//     strategy.entry('做空', strategy.short, qty = input_leverage * strategy.equity / close[0])
+    
+if ta.crossunder(wt.o, -100) and strategy.position_size < 0
+    strategy.close('做空', comment = '做空平仓')
+
+
+if strategy.position_size > 0
+    strategy.exit('做多出场', '做多', stop = strategy.position_avg_price * (1 - st_pt_percent), comment_profit='做多止盈', comment_loss='做多止损')
+
+if strategy.position_size < 0
+    strategy.exit('做空出场', '做空', stop = strategy.position_avg_price * (1 + st_pt_percent), comment_profit='做空止盈', comment_loss='做空止损')
+

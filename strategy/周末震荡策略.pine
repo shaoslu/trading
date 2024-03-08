@@ -2,7 +2,7 @@
 // © openbox6
 //@version=5
 import openbox6/zhuang/29 as lz
-strategy("周末震荡策略",
+strategy("周末布林带策略",
          overlay=true,
          initial_capital=4000,
          default_qty_type=strategy.percent_of_equity,
@@ -13,7 +13,6 @@ strategy("周末震荡策略",
 
 // 输入参数
 input_leverage = input.float(1.5, title = "杠杆倍数", step = 0.5)
-tradeType = input.string("双向开仓", title="交易方向", options=["双向开仓", "只做多", "只做空"])
 startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
 endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
 isStartPeriodEnabledAndInRange = startPeriodTime <= time
@@ -22,8 +21,10 @@ isEndPeriodEnabledAndInRange = endPeriodTime >= time
 isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
 // 初始化上一次出场的bar索引
 var lastExitBar = 0
-// 止盈止损百分比
+// 止损百分比
 st_pt_percent = 0.02
+// 止盈百分比
+st_p_percent = 0.02
 
 // ##############################################################
 // 布林带参数
@@ -36,37 +37,36 @@ plot(basis, title = "中轨")
 plot(upper, title = "上轨")
 plot(lower, title = "下轨")
 
-maLength = input.int(88, title = '趋势平均线长度')
+maLength = input.int(89, title = '趋势平均线长度')
 ma200 = ta.sma(close, maLength)
 plot(ma200, title = '趋势平均线', color = color.yellow, linewidth = 2)
-
-
-// 获取平均K线数据
-[my_open, my_high, my_low, my_close] = lz.heikin_ashi()
-// 计算超级趋势
-[trend, direction] = lz.supertrend_plus(3, 10, my_close, true)
-// plot(direction == 1 ? trend: na, style = plot.style_linebr, color = color.green)
-// plot(direction == -1 ? trend : na, style = plot.style_linebr, color = color.red)
-
-profitAtr = 3 * ta.atr(14)
-lossAtr = 2 * ta.atr(14)
 
 if ta.crossover(close, upper) and (dayofweek == 7 or dayofweek == 1) and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and close < ma200
     lastExitBar := bar_index
     strategy.entry('做空', strategy.short, qty = input_leverage * strategy.equity / close[0])
-    strategy.exit('做空止损', '做空', stop = close * (1 + st_pt_percent), limit = close * (1 - st_pt_percent), comment_profit='做空止盈', comment_loss='做空止损')
-    //strategy.exit('做空止损', '做空', stop = close + lossAtr, limit = close - profitAtr, comment_profit='做空止盈', comment_loss='做空止损')
+    
 
 if ta.crossunder(close, lower) and (dayofweek == 7 or dayofweek == 1) and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and close > ma200
     lastExitBar := bar_index
     strategy.entry('做多', strategy.long, qty = input_leverage * strategy.equity / close[0])
-    strategy.exit('做多止损', '做多', stop = close * (1 - st_pt_percent), limit = close * (1 + st_pt_percent), comment_profit='做多止盈', comment_loss='做多止损')
-    //strategy.exit('做多止损', '做多', stop = close - lossAtr, limit = close + profitAtr, comment_profit='做多止盈', comment_loss='做多止损')
+    
 
 
-if strategy.position_size > 0 and close >= upper
-    strategy.close('做多', comment = '做多平仓')
 
-if strategy.position_size < 0 and close <= lower
-    strategy.close('做空', comment = '做空平仓')
+//strategy.exit('做空止损', '做空', stop = close * (1 + st_pt_percent), limit = close * (1 - st_p_percent), comment_profit='做空止盈', comment_loss='做空止损')
+
+//strategy.exit('做多止损', '做多', stop = close * (1 - st_pt_percent), limit = close * (1 + st_p_percent), comment_profit='做多止盈', comment_loss='做多止损')
+
+
+
+strategy.exit('做多平仓', '做多', stop = close * (1 - st_pt_percent), trail_points = close * st_p_percent / syminfo.mintick, trail_offset = close * 0.001 / syminfo.mintick)
+
+strategy.exit('做多平仓', '做空', stop = close * (1 + st_pt_percent), trail_points = close * st_p_percent / syminfo.mintick, trail_offset = close * 0.001 / syminfo.mintick)
+
+
+// if strategy.position_size > 0 and close >= upper
+//     strategy.close('做多', comment = '做多平仓')
+
+// if strategy.position_size < 0 and close <= lower
+//     strategy.close('做空', comment = '做空平仓')
 

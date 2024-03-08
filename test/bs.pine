@@ -1,142 +1,21 @@
-// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// © openbox6
 //@version=5
-import openbox6/zhuang/1 as lz
-strategy("草龟交易法则-原始版",
-         overlay=true,
-         initial_capital=10000,
-         default_qty_type=strategy.percent_of_equity,
-         backtest_fill_limits_assumption=1,
-         default_qty_value=100,
-         process_orders_on_close=true,
-         commission_value = 0.02)
-[basis, upper, lower] = lz.getBooling(close, 20, 2)  // 计算booling带
-plot(basis, title = '中轨')
-plot(upper, title = '上轨')
-plot(lower, title = '下轨')
-input_leverage = input.float(1, '倍数', step=0.5, group='杠杆')
-tradeType = input.string("双向开仓", title="交易方向", options=["只做多", "只做空", "双向开仓"], group='交易方向')
-startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
-endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
-isStartPeriodEnabledAndInRange = startPeriodTime <= time
-isEndPeriodEnabledAndInRange = endPeriodTime >= time
-isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
-// 初始化参数
-long_signal = false // 做多信号
-short_signal = false  // 空单信号
-reverse_long_signal = false
-reverse_short_signal = false
-max_order_wait = 6 // 最大进场订单等待时间
-max_trade_wait = 20 // 最大出场订单等待时间
-var trade_wait = 0  // 交易最大等待成交时间
-var step_status = -9  // 订单完成状态, 1表示已下进场订单, 2表示进场订单已成交, 3表示已下出场订单, 4表示出场订单已成交, -9表示等待交易信号
-var is_trading = 0 // 是否处于交易区间, 1表示做多, -1表示做空, 0表示等待
-var test = 0.0  // 用于测试程序bug
-if (close[0] - open[0]) > (upper[1] - basis[1]) and close[1] > open[1] and low[0] > basis[0] and is_trading == 0 and dayofweek != 7 and dayofweek != 1
-    if tradeType != "只做空"
-        long_signal := true
-        is_trading := 1
-if (open[0] - close[0]) > (upper[1] - basis[1]) and close[1] < open[1] and high[0] < basis[0] and is_trading == 0 and dayofweek != 7 and dayofweek != 1
-    if tradeType != "只做多"
-        short_signal := true
-        is_trading := -1
-if is_trading == 1 and (open[0] - close[0]) > (upper[1] - basis[1])
-    reverse_short_signal := true
-if is_trading == -1 and (close[0] - open[0]) > (upper[1] - basis[1])
-    reverse_long_signal := true
+indicator("Supertrend", overlay = true, timeframe = "", timeframe_gaps = true)
+
+atrPeriod = input.int(10,    "ATR Length", minval = 1)
+factor =    input.float(3.0, "Factor",     minval = 0.01, step = 0.01)
+
+[supertrend, direction] = ta.supertrend(factor, atrPeriod)
+
+supertrend := barstate.isfirst ? na : supertrend
+upTrend =    plot(direction < 0 ? supertrend : na, "Up Trend",   color = color.green, style = plot.style_linebr)
+downTrend =  plot(direction < 0 ? na : supertrend, "Down Trend", color = color.red,   style = plot.style_linebr)
+bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle",display = display.none)
+
+fill(bodyMiddle, upTrend,   color.new(color.green, 90), fillgaps = false)
+fill(bodyMiddle, downTrend, color.new(color.red,   90), fillgaps = false)
+
+alertcondition(direction[1] > direction, title='Downtrend to Uptrend', message='The Supertrend value switched from Downtrend to Uptrend ')
+alertcondition(direction[1] < direction, title='Uptrend to Downtrend', message='The Supertrend value switched from Uptrend to Downtrend')
+alertcondition(direction[1] != direction, title='Trend Change', message='The Supertrend value switched from Uptrend to Downtrend or vice versa')
 
 
-
-
-
-
-
-
-
-
-
-if isInRange
-    if is_trading == 1
-        trade_wait := trade_wait + 1
-        if strategy.position_size == 0
-            if step_status == -9
-                strategy.entry("做多", strategy.long, qty = input_leverage * strategy.equity / close[0], limit = close[0]) // 进场订单
-                step_status := 1
-            if step_status == 1
-                if trade_wait > max_order_wait and strategy.position_size == 0 // 6根K线不成交, 取消订单
-                    strategy.cancel("做多") // 超时取消进场订单
-                    trade_wait := 0
-                    step_status := -9
-                    is_trading := 0
-            if step_status == 3 // 说明订单已成交, 按照定义, 此时step_status应该为4, 不过接下来我们直接进行参数的初始化, 故而跳过赋值4的步骤
-                if (close[0] - open[0]) > (upper[1] - basis[1]) and close[1] > open[1] and low[0] > basis[0] // 检查出场K线是否为信号K线
-                    strategy.entry("做多", strategy.long, qty = input_leverage * strategy.equity / close[0], limit = close[0]) // 进场订单
-                    step_status := 1
-                    trade_wait := 1
-                else
-                    trade_wait := 0
-                    step_status := -9
-                    is_trading := 0
-        else
-            if trade_wait > max_trade_wait // 超时平仓
-                strategy.close("做多", immediately=true)
-                trade_wait := 0
-                step_status := -9
-                is_trading := 0
-            else
-                if low[0] < basis[0] and step_status == 1  // 出现卖出信号
-                    strategy.exit("exit", "做多", limit = math.max(open[0], close[0]))
-                    step_status := 3
-    if is_trading == -1
-        trade_wait := trade_wait + 1
-        if strategy.position_size == 0
-            if step_status == -9
-                strategy.entry("做空", strategy.short, qty = input_leverage * strategy.equity / close[0], limit = close[0]) // 进场订单
-                step_status := 1
-            if step_status == 1
-                if trade_wait > max_order_wait and strategy.position_size == 0 // 6根K线不成交, 取消订单
-                    strategy.cancel("做空") // 超时取消进场订单
-                    trade_wait := 0
-                    step_status := -9
-                    is_trading := 0
-            if step_status == 3 // 说明订单已成交, 按照定义, 此时step_status应该为4, 不过接下来我们直接进行参数的初始化, 故而跳过赋值4的步骤
-                if (open[0] - close[0]) > (upper[1] - basis[1]) and close[1] < open[1] // 检查出场K线是否为信号K线
-                    strategy.entry("做空", strategy.short, qty = input_leverage * strategy.equity / close[0], limit = close[0]) // 进场订单
-                    step_status := 1
-                    trade_wait := 1
-                else
-                    trade_wait := 0
-                    step_status := -9
-                    is_trading := 0
-        else
-            if trade_wait > max_trade_wait // 超时平仓
-                strategy.close("做空", immediately=true)
-                trade_wait := 0
-                step_status := -9
-                is_trading := 0
-            else
-                if high[0] > basis[0] and step_status == 1  // 出现卖出信号
-                    strategy.exit("exit", "做空", limit = math.min(open[0], close[0]))
-                    step_status := 3
-    if reverse_short_signal // 行情逆转，立刻平仓
-        strategy.close("做多", immediately=true)
-        if tradeType == '双向开仓' and close[0] < basis[0]
-            is_trading := -1
-            trade_wait := 1
-            strategy.entry("做空", strategy.short, qty = input_leverage * strategy.equity / close[0], limit = close[0]) // 进场订单
-            step_status := 1
-        else
-            trade_wait := 0
-            step_status := -9
-            is_trading := 0
-    if reverse_long_signal // 行情逆转， 立刻平仓
-        strategy.close("做空", immediately=true)
-        if tradeType == '双向开仓' and close[0] > basis[0]
-            trade_wait := 1
-            is_trading := 1
-            strategy.entry("做多", strategy.long, qty = input_leverage * strategy.equity / close[0], limit = close[0]) // 进场订单
-            step_status := 1
-        else
-            trade_wait := 0
-            step_status := -9
-            is_trading := 0

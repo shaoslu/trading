@@ -1,0 +1,143 @@
+ 
+
+//@version=5
+import openbox6/zhuang/29 as lz
+strategy("练习-布林突破策略",
+         overlay=true,
+         initial_capital=4000,
+         default_qty_type=strategy.percent_of_equity,
+         backtest_fill_limits_assumption=1,
+         default_qty_value=100,
+         process_orders_on_close=true,
+         commission_value = 0.04)
+
+// 布林带参数
+bullLength = input.int(20, title = '布林带长度')
+bullMulti = input.float(1.2, title = '布林带倍数')
+
+// 布林带
+[basis, upper, lower] = lz.getBooling(close, bullLength, bullMulti)
+plot(basis, title = "中轨", color=color.gray)
+plot(upper, title = "上轨")
+plot(lower, title = "下轨")
+
+
+// 做单状态
+var is_trade = false
+// 止盈比例
+take_profit = input.float(0.075, title = '止盈比例')
+// 止损比例
+stop_loss = input.float(0.05, title = '止损比例')
+
+display = input.bool(true, title = "显示交易信号")
+
+// 是否进场做多
+var is_long = false
+// 做多价格
+var long_open = 0.0
+// 做多止盈价格
+var long_tp = 0.0
+// 做多止损价格
+var long_sl = 0.0
+
+// 是否进场做空
+var is_short = false
+// 做空价格
+var short_open = 0.0
+// 做空止盈价格
+var short_tp = 0.0
+// 做空止损价格
+var short_sl = 0.0
+
+// 进场信号
+long_signal = false
+short_signal = false
+// 出场信号
+exit_long = false
+exit_short = false
+
+if ta.crossover(close, upper) 
+    if not is_trade
+        long_signal := true
+        long_open := close
+        long_tp := close * (1 + take_profit)
+        long_sl := close * (1 - stop_loss)
+        is_long := true
+        is_trade := true
+
+
+if ta.crossunder(close, lower) 
+    if not is_trade
+        short_signal := true
+        short_open := close
+        short_tp := close * (1 - take_profit)
+        short_sl := close * (1 + stop_loss)
+        is_short := true
+        is_trade := true
+
+
+if is_long
+    if high > long_tp
+        exit_long := true
+        is_long := false
+        is_trade := false
+        long_open := 0.0
+        long_tp := 0.0
+        long_sl := 0.0
+    else
+        if low < long_sl
+            exit_long := true
+            is_long := false
+            is_trade := false
+            long_open := 0.0
+            long_tp := 0.0
+            long_sl := 0.0
+
+// 交易信号图标
+plotshape(long_signal, text = "做多进场", textcolor=color.green,size = size.small, style=shape.triangleup, location=location.belowbar, color=color.green, display=display ? display.all : display.none)
+plotshape(exit_long, text = "做多出场", textcolor=color.blue, size = size.small, style=shape.triangledown, color=color.blue, color=color.green, display=display ? display.all : display.none)
+plot(long_signal ? long_open : na, title = "做多进场价格", color=color.yellow, style=plot.style_linebr, linewidth=10, color=color.green, display=display ? display.all : display.none)
+plot(is_long ? long_tp : na, title = "做多止盈价格", color=color.green, style=plot.style_linebr, linewidth=2, color=color.green, display=display ? display.all : display.none)
+plot(is_long ? long_sl : na, title = "做多止损价格", color=color.red, style=plot.style_linebr, linewidth=2, color=color.green, display=display ? display.all : display.none)
+
+
+if is_short
+    if low < short_tp
+        exit_short := true
+        is_short := false
+        is_trade := false
+        short_open := 0.0
+        short_tp := 0.0
+        short_sl := 0.0
+    else
+        if high > short_sl
+            exit_short := true
+            is_short := false
+            is_trade := false
+            short_open := 0.0
+            short_tp := 0.0
+            short_sl := 0.0
+
+
+// 交易信号图标
+plotshape(short_signal, text = "做空进场", textcolor=color.green,size = size.small, style=shape.triangledown, color=color.green, color=color.green, display=display ? display.all : display.none)
+plotshape(exit_short, text = "做空出场", textcolor=color.purple, size = size.small, style=shape.triangleup, location=location.belowbar, color=color.purple, color=color.green, display=display ? display.all : display.none)
+plot(short_signal ? short_open : na, title = "做空进场价格", color=color.aqua, style=plot.style_linebr, linewidth=10, color=color.green, display=display ? display.all : display.none)
+plot(is_short ? short_tp : na, title = "做空止盈价格", color=color.red, style=plot.style_linebr, linewidth=2, color=color.green, display=display ? display.all : display.none)
+plot(is_short ? short_sl : na, title = "做空止损价格", color=color.purple, style=plot.style_linebr, linewidth=2, color=color.green, display=display ? display.all : display.none)
+
+
+if long_signal
+    strategy.order(id = "做多", direction = strategy.long , qty = strategy.equity / close)
+
+strategy.exit('做多平仓', '做多', stop = long_sl, trail_points = close * take_profit / syminfo.mintick, trail_offset = close * 0.001 / syminfo.mintick)
+
+
+if short_signal
+    strategy.order(id = "做空", direction = strategy.short , qty = strategy.equity / close)
+
+strategy.exit('做空平仓', '做空', stop = short_sl, trail_points = close * take_profit / syminfo.mintick, trail_offset = close * 0.001 / syminfo.mintick)
+
+
+
+

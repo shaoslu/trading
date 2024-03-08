@@ -1,72 +1,172 @@
 // This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © openbox6
+import openbox6/zhuang/29 as lz
 //@version=5
-import openbox6/zhuang/1 as lz
-strategy("奔波霸策略",
-         overlay=true,
-         initial_capital=10000,
-         default_qty_type=strategy.percent_of_equity,
-         backtest_fill_limits_assumption=1,
-         default_qty_value=100,
-         process_orders_on_close=true,
-         commission_value = 0.02)
-[basis, upper, lower] = lz.getBooling(close, 20, 2)  // 计算booling带
-plot(basis, title = '中轨')
-plot(upper, title = '上轨')
-plot(lower, title = '下轨')
-input_leverage = input.float(1, '倍数', step=0.5, group='杠杆')
-tradeType = input.string("双向开仓", title="交易方向", options=["只做多", "只做空", "双向开仓"], group='交易方向')
-startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
+strategy("我想去火星 - lite", overlay=true,
+         initial_capital = 10000,
+         default_qty_type = strategy.percent_of_equity,
+         default_qty_value = 100,
+         commission_type = strategy.commission.percent,
+         commission_value = 0.04
+         )
+// 计算时间范围
+startPeriodTime = input.time(timestamp('1 Jan 2012'), '开始', group='交易日期范围', inline='开始时间')
 endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
 isStartPeriodEnabledAndInRange = startPeriodTime <= time
 isEndPeriodEnabledAndInRange = endPeriodTime >= time
 isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
-
-
-// 初始化参数
-long_signal = false // 做多信号
-short_signal = false  // 空单信号
-max_trade_wait = 20 // 最大出场订单等待时间
-var trade_wait = 0  // 交易最大等待成交时间
-var is_trading = 0 // 是否处于交易区间, 1表示做多, -1表示做空, 0表示等待
-var stop_profit = 0.0 // 止盈
-var stop_loss = 0.0 // 止损
-
-// 1.当前K线收盘价大于开盘价，且最高价大于布林带上轨
-// 2.前一根K线收盘价大于开盘价，且最高价大于布林带上轨
-if close > open and high > upper and close[1] > open[1] and high[1] > upper[1]
-    is_trading := 1
-
-// 1.当前K线开盘价大于收盘价，且最低价小于布林带下轨
-// 2.前一根K线开盘价大于收盘价，且最低价小于布林带下轨
-if open > close and low < lower and open[1] > close[1] and low[1] < lower[1]
-    is_trading := -1
-
-
-plot(stop_profit > 0 ? stop_profit : na, title='止盈线', color=color.green, style = plot.style_linebr)
-plot(stop_loss > 0 ? stop_loss : na, title='止损线', color=color.red, style = plot.style_linebr)
-
-
-// 交易范围内
+// 获取平均K线数据
+[my_open, my_high, my_low, my_close] = lz.heikin_ashi()
+// 画出平均K线
+//plotcandle(my_open < my_close ? my_open : na, my_high, my_low, my_close, title='Green Candles', color=color.green, wickcolor=color.green, bordercolor=color.green, display=display.pane + display.data_window)
+//plotcandle(my_open >= my_close ? my_open : na, my_high, my_low, my_close, title='Red Candles', color=color.red, wickcolor=color.red, bordercolor=color.red, display=display.pane + display.data_window)
+input_leverage = input.float(0.5, '杠杆倍数', step=0.1, group = '基础设置')
+// 计算超级趋势
+[trend, direction] = lz.supertrend_plus(3, 10, my_close, true)
+//plot(direction == 1 ? trend: na, style = plot.style_linebr, color = color.green)
+//plot(direction == -1 ? trend : na, style = plot.style_linebr, color = color.red)
+[basis, upper, lower] = lz.getBooling(close, 20, 2)  // 计算booling带
+//plot(basis, title = '中轨', color = color.white)
+//plot(upper, title = '上轨', color = color.white)
+//plot(lower, title = '下轨', color = color.white)
+trade_type = input.string("双向开仓", title="交易方向", options=["只做多", "只做空", "双向开仓"], group = '基础设置')
+stop_loss = input.float(0.3, title = '止损', group = '基础设置')
+martinPercent = input.float(8, title= '马丁比例', step=0.1, tooltip = '价格下降多少百分比后触发马丁进场,现在只有固定4级马丁', group = '马丁设置')
+// martinMaxGrade = input.int(4, title= '马丁级数', step=1, tooltip = '允许的最大马丁级数', group = '马丁设置')
+martinMaxGrade = 4  // 需要额外调整止盈，画图
+martin = input.float(1.618, title='马丁基数', minval = 1, step = 0.1, group = '马丁设置')
+martin_safe = input.bool(true, title = '止盈', group = '马丁设置')
+debug = input(false, title = '启用调试', tooltip = '如果平均K线出现实时更新的情况,可能会导致重绘,正确的数据应该是比真实K线少一根')
+long_signal = direction[0] == 1 and direction[1] == -1 and trade_type != "只做空"
+short_signal = direction[0] == -1 and direction[1] == 1 and trade_type != "只做多"
+var step_status = 0  // 1 表示提交进场订单，2 表示进场订单成交， 3 表示提交出场订单， 4 表示出场订单成交
+var trading = 0  // 1 表示做多， -1 表示做空
+var short_triggle = 0.0
+var long_triggle = 0.0
+var long_entry = 0.0
+var short_entry = 0.0
+var long_tp_stop = 0.0
+var long_martin = 0.0
+var short_tp_stop = 0.0
+var short_martin = 0.0
+// 定义一个列表数组用于斐波那契止盈
+level = array.new_float(na)
+// 向列表数组中添加元素
+array.push(level, 0.236)
+array.push(level, 0.372)
+array.push(level, 0.5)
+// 访问列表数组中的元素
+//level0 = array.get(level, 0)
+//level1 = array.get(level, 1)
+//level2 = array.get(level, 2)
+equity_percent = 0.0
+for i = 0 to martinMaxGrade - 1
+    equity_percent := equity_percent + 1 * math.pow(martin, i)
 if isInRange
-    if is_trading == 0 and strategy.position_size == 0
-        trade_wait := 0
-        is_trading := 0
-        stop_profit := 0.0
-        stop_loss := 0.0
-    if is_trading == 1 
-        trade_wait := trade_wait + 1
-        if strategy.position_size == 0
-            stop_profit := close[0] + (upper[0] - basis[0])
-            stop_loss := close[0] - (upper[0] - basis[0])
-            strategy.entry("做多", strategy.long, qty = input_leverage * strategy.equity / close) // 进场订单  
-            strategy.exit('做多平仓', '做多', comment_profit='做多止盈', comment_loss='做多止损', limit = stop_profit, stop = stop_loss) 
-        else if strategy.position_size > 0
-            if trade_wait >= max_trade_wait
-                strategy.close("做多", comment="做多超时平仓")
-                trade_wait := 0
-                is_trading := 0
-                stop_profit := 0.0
-                stop_loss := 0.0
-                
+    if trading == 0
+        if long_signal
+            long_entry := close
+            strategy.order('做空', comment = '做空 1' + ', 止盈价 = ' + str.tostring(math.round_to_mintick(long_entry * (1 - martinPercent / 100))), direction = strategy.short, qty = (1 / equity_percent) * input_leverage * strategy.equity / close)
+            trading := 1
+            step_status := 2
+    if trading == 0
+        if short_signal
+            short_entry := close
+            strategy.order('做多', comment = '做多 1' + ', 止盈价 = ' + str.tostring(math.round_to_mintick(short_entry * (1 + martinPercent / 100))), direction = strategy.long, qty = (1 / equity_percent) * input_leverage * strategy.equity / close)
+            trading := -1
+            step_status := 2
+    if trading == 1
+        if step_status == 3
+            if strategy.position_size != 0
+                if martin_safe
+                    if strategy.opentrades == 1
+                        strategy.order('做多',  comment = '止盈 1', limit = long_entry * (1 - strategy.opentrades * martinPercent / 100), direction = strategy.long, qty = -strategy.position_size)
+                    if strategy.opentrades == 2
+                        long_martin := long_entry * (1 + strategy.opentrades * martinPercent / 100)
+                        strategy.order('做多',  comment = '止盈 2', limit = long_entry * (1 + array.get(level, 0) * 1 * martinPercent / 100), direction = strategy.long, qty = -strategy.position_size)
+                    if strategy.opentrades == 3
+                        long_martin := long_entry * (1 + strategy.opentrades * martinPercent / 100)
+                        strategy.order('做多',  comment = '止盈 3', limit = long_entry * (1 + array.get(level, 1) * 2 * martinPercent / 100), direction = strategy.long, qty = -strategy.position_size)
+                    if strategy.opentrades == 4
+                        long_martin := long_entry * (1 + strategy.opentrades * martinPercent / 100)
+                        strategy.order('做多',  comment = '止盈 4', limit = long_entry * (1 + array.get(level, 2) * 3 * martinPercent / 100), direction = strategy.long, qty = -strategy.position_size)
+                if direction == -1
+                    strategy.cancel_all()
+                    strategy.close_all(comment = '空单平仓')
+                    trading := 0
+                    step_status := 0
+                    if short_signal
+                        short_entry := close
+                        strategy.order('做多', comment = '做多 1' + ', 止盈价 = ' + str.tostring(math.round_to_mintick(short_entry * (1 + martinPercent / 100))), direction = strategy.long, qty = (1 / equity_percent) * input_leverage * strategy.equity / close)
+                        trading := -1
+                        step_status := 2
+                else
+                    if (high - long_entry) / long_entry > stop_loss
+                        strategy.cancel_all()
+                        strategy.close_all(comment = '做空止损')
+                        trading := 0
+                        step_status := 0
+            else
+                if martin_safe
+                    strategy.cancel_all()
+                    trading := 0
+                    step_status := 0
+        if step_status == 2 and trading == 1
+            long_martin := long_entry * (1 + martinPercent / 100)
+            for i = 0 to martinMaxGrade - 2
+                strategy.order(id = '做空 ' + str.tostring(i+2),
+                               direction = strategy.short,
+                               qty = (1 / equity_percent) * math.pow(martin, i+1) * input_leverage * strategy.equity / close,
+                               limit = long_entry * (1 + (i+1) * martinPercent / 100),
+                               comment='做空 ' + str.tostring(i+2) + ', 止盈价 = ' + str.tostring(math.round_to_mintick(long_entry * (1 + array.get(level, i) * (i + 1) * martinPercent / 100)))
+                              )
+                step_status := 3
+                long_tp_stop := long_entry * (1 + stop_loss)
+    if trading == -1
+        if step_status == 3
+            if strategy.position_size != 0
+                if martin_safe
+                    if strategy.opentrades == 1
+                        strategy.order('做空',  comment = '止盈 1', limit = short_entry * (1 + strategy.opentrades * martinPercent / 100), direction = strategy.short, qty = strategy.position_size)
+                    if strategy.opentrades == 2
+                        short_martin := short_entry * (1 - strategy.opentrades * martinPercent / 100)
+                        strategy.order('做空',  comment = '止盈 2', limit = short_entry * (1 - array.get(level, 0) * 1 * martinPercent / 100), direction = strategy.short, qty = strategy.position_size)
+                    if strategy.opentrades == 3
+                        short_martin := short_entry * (1 - strategy.opentrades * martinPercent / 100)
+                        strategy.order('做空',  comment = '止盈 3', limit = short_entry * (1 - array.get(level, 1) * 2 * martinPercent / 100), direction = strategy.short, qty = strategy.position_size)
+                    if strategy.opentrades == 4
+                        short_martin := short_entry * (1 - strategy.opentrades * martinPercent / 100)
+                        strategy.order('做空',  comment = '止盈 4', limit = short_entry * (1 - array.get(level, 2) * 3 * martinPercent / 100), direction = strategy.short, qty = strategy.position_size)
+                if direction == 1
+                    strategy.cancel_all()
+                    strategy.close_all( comment = '多单平仓')
+                    trading := 0
+                    step_status := 0
+                    if long_signal
+                        long_entry := close
+                        strategy.order('做空', comment = '做空 1' + ', 止盈价 = ' + str.tostring(math.round_to_mintick(long_entry * (1 - martinPercent / 100))), direction = strategy.short, qty = (1 / equity_percent) * input_leverage * strategy.equity / close)
+                        trading := 1
+                        step_status := 2
+                else
+                    if (short_entry - low) / short_entry > stop_loss
+                        strategy.cancel_all()
+                        strategy.close_all(comment = '做多止损')
+                        trading := 0
+                        step_status := 0
+            else
+                if martin_safe
+                    strategy.cancel_all()
+                    trading := 0
+                    step_status := 0
+        if step_status == 2 and trading == -1
+            short_martin := short_entry * (1 - martinPercent / 100)
+            for i = 0 to martinMaxGrade - 2
+                strategy.order(id = '做多 ' + str.tostring(i+2),
+                               direction = strategy.long,
+                               qty = (1 / equity_percent) * math.pow(martin, i+1) * input_leverage * strategy.equity / close,
+                               limit = short_entry * (1 - (i+1) * martinPercent / 100),
+                               comment='做多 ' + str.tostring(i+2) + ', 止盈价 = ' + str.tostring(math.round_to_mintick(short_entry * (1 - array.get(level, i) * (i + 1) * martinPercent / 100)))
+                              )
+                step_status := 3
+                short_tp_stop := short_entry * (1 - stop_loss)
 
