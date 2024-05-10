@@ -1,0 +1,87 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © openbox6
+//@version=5
+import openbox6/zhuang/29 as lz
+strategy("KTN周末策略",
+         overlay=true,
+         initial_capital=2000,
+         default_qty_type=strategy.percent_of_equity,
+         backtest_fill_limits_assumption=1,
+         default_qty_value=100,
+         process_orders_on_close=true,
+         commission_value = 0.04)
+
+// 输入参数
+startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
+endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
+isStartPeriodEnabledAndInRange = startPeriodTime <= time
+isEndPeriodEnabledAndInRange = endPeriodTime >= time
+// 交易时间段
+isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
+input_leverage = input.float(2, title = "杠杆倍数", step = 0.5)
+maLength = input.int(89, title = '趋势平均线长度')
+
+
+
+// 肯特纳通道指标
+kenLength = input.int(20, minval=1, title='KTN长度')
+mult = input.float(2.0, title='KTN倍数')
+src = close
+atrlength = input(10, "ATR长度", display = display.data_window)
+esma(source, length)=>
+	e = ta.ema(source, length)
+basis = esma(src, kenLength)
+rangema = ta.atr(atrlength)
+upper = basis + rangema * mult
+lower = basis - rangema * mult
+plot(basis, title = "中轨")
+plot(upper, title = "上轨")
+plot(lower, title = "下轨")
+ma200 = ta.sma(close, maLength)
+plot(ma200, title = '趋势平均线', color = color.yellow, linewidth = 2)
+
+
+// 初始化上一次出场的bar索引
+var lastExitBar = 0
+var long_bar = 0
+var short_bar = 0
+// 止损百分比
+st_pt_percent = input.float(2, title = '止损百分比', maxval=100)/100
+// 移动止盈止损
+stop_type = input.string("移动止盈", title="止盈止损方式", options=["移动止盈", "固定止盈"])
+// 止盈百分比
+st_p_percent = st_pt_percent
+long_signal = false // 做多信号
+short_signal = false  // 空单信号
+
+// ##############################################################
+
+
+
+// 平均成交量
+volSma = ta.sma(volume, 20)
+
+// 十字星
+isDoji = math.abs(open-close) <= (high-low) * 0.1
+
+if (dayofweek == 7 or dayofweek == 1 or (dayofweek == 6 and hour(time) >= 18)) and ta.crossover(close, upper) and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and upper < ma200
+    lastExitBar := bar_index
+    short_bar := bar_index
+    strategy.entry('做空', strategy.short, qty = input_leverage * strategy.equity / close[0], comment='震荡做空')
+    
+
+if (dayofweek == 7 or dayofweek == 1 or (dayofweek == 6 and hour(time) >= 18)) and ta.crossunder(close, lower) and isInRange and strategy.position_size == 0 and (bar_index - lastExitBar) > 10 and lower > ma200
+    lastExitBar := bar_index
+    long_bar := bar_index
+    strategy.entry('做多', strategy.long, qty = input_leverage * strategy.equity / close[0], comment='震荡做多')
+
+
+if stop_type == '固定止盈'
+    strategy.exit('做空止损', '做空', stop = strategy.position_avg_price * (1 + st_pt_percent), limit = strategy.position_avg_price * (1 - st_p_percent), comment_profit='做空止盈', comment_loss='做空止损')
+    strategy.exit('做多止损', '做多', stop = strategy.position_avg_price * (1 - st_pt_percent), limit = strategy.position_avg_price * (1 + st_p_percent), comment_profit='做多止盈', comment_loss='做多止损')
+
+
+if stop_type == '移动止盈'
+    strategy.exit('做多平仓', '做多', stop = strategy.position_avg_price * (1 - st_pt_percent), trail_points = strategy.position_avg_price * st_p_percent / syminfo.mintick, trail_offset = strategy.position_avg_price * 0.002 / syminfo.mintick)
+    strategy.exit('做空平仓', '做空', stop = strategy.position_avg_price * (1 + st_pt_percent), trail_points = strategy.position_avg_price * st_p_percent / syminfo.mintick, trail_offset = strategy.position_avg_price * 0.002 / syminfo.mintick)
+

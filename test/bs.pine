@@ -1,21 +1,118 @@
 //@version=5
-indicator("Supertrend", overlay = true, timeframe = "", timeframe_gaps = true)
-
-atrPeriod = input.int(10,    "ATR Length", minval = 1)
-factor =    input.float(3.0, "Factor",     minval = 0.01, step = 0.01)
-
-[supertrend, direction] = ta.supertrend(factor, atrPeriod)
-
-supertrend := barstate.isfirst ? na : supertrend
-upTrend =    plot(direction < 0 ? supertrend : na, "Up Trend",   color = color.green, style = plot.style_linebr)
-downTrend =  plot(direction < 0 ? na : supertrend, "Down Trend", color = color.red,   style = plot.style_linebr)
-bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle",display = display.none)
-
-fill(bodyMiddle, upTrend,   color.new(color.green, 90), fillgaps = false)
-fill(bodyMiddle, downTrend, color.new(color.red,   90), fillgaps = false)
-
-alertcondition(direction[1] > direction, title='Downtrend to Uptrend', message='The Supertrend value switched from Downtrend to Uptrend ')
-alertcondition(direction[1] < direction, title='Uptrend to Downtrend', message='The Supertrend value switched from Uptrend to Downtrend')
-alertcondition(direction[1] != direction, title='Trend Change', message='The Supertrend value switched from Uptrend to Downtrend or vice versa')
+//計算指標:
+//  PSAR: 使用 ta.sar() 函數計算 PSAR 指標,用於確定趨勢方向。
+//  EMA: 使用 ta.ema() 函數計算指定週期的指數移動平均線。
+//  TTM Squeeze: 使用布林帶和肯特納通道計算 TTM Squeeze 指標,用於判斷市場的波動性和趨勢強度。
+//產生交易信號:
+//  多頭信號: 當價格高於 EMA,且價格上穿 PSAR,同時 TTM Squeeze 振盪器大於 0,且當前無多頭持倉時,產生多頭進場信號。
+//  空頭信號: 當價格低於 EMA,且價格下穿 PSAR,同時 TTM Squeeze 振盪器小於 0,且當前無空頭持倉時,產生空頭進場信號。
+//止損和止盈:
+//  止損: 根據高低點和備用乘數計算止損價格。多頭止損為價格乘以備用乘數,空頭止損為價格乘以 (1 + (1 - 備用乘數))。
+//  止盈: 根據風險回報比和止損幅度計算自動止盈價格。多頭止盈為價格乘以 (1 + 止損幅度 * 風險回報比),空頭止盈為價格乘以 (1 - 止損幅度 * 風險回報比)。
 
 
+// 貓咪神好窮, 如果想貓咪神不斷為大家設計不同的策略, 請給貓咪神捐款支持一下~ 快沒貓糧了~ 
+// 以下是貓咪神的錢包地址: 
+
+// ERC 錢包地址
+// 0x4424BbdCA3e009Be48BD09986a9C7825B499cb42
+   
+// BSC 錢包地址
+// 0xde1c7fa2a2487c21ffbb731f117aedc8b678e339
+
+// BNB 地址
+// bnb165q9dz39mqh789zuuuqwkv22plut6f4nzy9jc9
+// MEMO
+// 494419451
+
+// TRON 錢包地址
+// TFR9U7mZfnYWi9boWzivkkqN8B6Z8mK5dJ
+
+
+
+strategy("貓咪神 - 簡化章魚BTC 1小時策略", 
+   overlay=true, 
+   default_qty_type=strategy.percent_of_equity, 
+   initial_capital=1000, 
+   process_orders_on_close=true, 
+   commission_value=0.075)
+
+// Input
+float src                          = input(close, title="價格來源,預設為收盤價")
+emaLength                          = input.int(50, minval=2, title="EMA 的週期長度")
+ttmLength                          = input.int(30, minval=0, title="TTM Squeeze 的週期長度")
+psarStep                           = input.float(0.02, "PSAR 的步長", minval=0.0)
+maxPsarStep                        = input.float(0.2, "PSAR 的最大步長", minval=0.0)
+highLowStopLossBackupMultiplier    = input.float(0.90, "止損% 0.98 = 2%", step=0.01, minval=0, maxval=1)
+
+automaticHighLowTakeProfitRatio    = input.float(1.125, "止盈的風險回報比", minval=0)
+
+// Calculate PSAR
+psarUp   = ta.sar(psarStep, psarStep, maxPsarStep)
+psarDown = ta.sar(psarStep, psarStep, maxPsarStep)
+psar     = src > psarUp ? psarUp : psarDown
+
+// Calculate EMA
+ema    = ta.sma(ta.hma(close, emaLength), 10)
+
+
+// Calculate TTM Squeeze
+bband(length, mult)  => ta.sma(close, length) + mult * ta.stdev(close, length)
+keltner(length, mult) => ta.ema(close, length) + mult * ta.ema(ta.tr, length)
+e1                    = (ta.highest(high, ttmLength) + ta.lowest(low, ttmLength)) / 2 + ta.sma(close, ttmLength)
+osc                   = ta.linreg(close - e1 / 2, ttmLength, 0)
+diff                  = bband(ttmLength, 2) - keltner(ttmLength, 1)
+sqzColor              = osc[1] < osc[0] ? osc[0] >= 0 ? color.aqua : color.fuchsia : osc[0] >= 0 ? color.teal : color.purple
+midColor              = diff >= 0 ? color.green : color.red
+
+// Signals
+var isLongSignal  = false  // 是否有多頭信號
+var isShortSignal = false  // 是否有空頭信號
+
+
+
+
+longCond          = src > ema and ta.crossover(src, psar) and osc > 0 and not isLongSignal and not isShortSignal
+shortCond         = src < ema and ta.crossunder(src, psar) and osc < 0 and not isShortSignal and not isLongSignal
+longStop          = strategy.position_avg_price * highLowStopLossBackupMultiplier
+shortStop         = strategy.position_avg_price * (1 + (1 - highLowStopLossBackupMultiplier))
+longTake          = strategy.position_avg_price * (1 + (math.abs(1 - longStop / src) * automaticHighLowTakeProfitRatio))
+shortTake         = strategy.position_avg_price * (1 - (math.abs(1 - src / shortStop) * automaticHighLowTakeProfitRatio))
+
+// Entry and exit
+if longCond
+    strategy.entry("Long", strategy.long)
+    isLongSignal  := true
+    isShortSignal := false
+else if shortCond
+    strategy.entry("Short", strategy.short)
+    isShortSignal := true
+    isLongSignal  := false
+    
+LongStop1 = ta.crossunder(src, longStop)
+LongStop2 = ta.crossover(src, longTake)
+ShortStop1 = ta.crossover(src, shortStop) 
+ShortStop2 = ta.crossunder(src, shortTake)
+if isLongSignal
+    if LongStop1 or LongStop2
+        strategy.close("Long",  comment = "平多")
+        isLongSignal := false
+
+else if isShortSignal
+    if ShortStop1 or ShortStop2
+        strategy.close("Short",  comment = "平空")
+        isShortSignal := false
+    
+// Plot signals
+plotshape(isLongSignal and not isLongSignal[1], location=location.belowbar, style=shape.triangleup, size=size.small, color=color.green)
+plotshape(isShortSignal and not isShortSignal[1], location=location.abovebar, style=shape.triangledown, size=size.small, color=color.red)
+
+// Plot stop loss and take profit
+plot(isLongSignal ? longStop : na, color=color.green, style=plot.style_linebr)
+plot(isLongSignal ? longTake : na, color=color.green, style=plot.style_linebr)
+plot(isShortSignal ? shortStop : na, color=color.red, style=plot.style_linebr)
+plot(isShortSignal ? shortTake : na, color=color.red, style=plot.style_linebr)
+
+// Plot EMA and PSAR
+plot(ema, color=color.blue)
+plot(psar, color=sqzColor, style=plot.style_circles)

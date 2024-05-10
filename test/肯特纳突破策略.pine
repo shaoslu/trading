@@ -1,0 +1,141 @@
+
+
+//@version=5
+strategy("KTN突破策略",
+         overlay=true,
+         initial_capital=4000,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         process_orders_on_close=true,
+         commission_value = 0.04)
+
+
+// 输入参数
+startPeriodTime = input.time(timestamp('1 Jan 2021'), '开始', group='交易日期范围', inline='开始时间')
+endPeriodTime = input.time(timestamp('31 Dec 2099'), '结束', group='交易日期范围', inline='结束时间')
+isStartPeriodEnabledAndInRange = startPeriodTime <= time
+isEndPeriodEnabledAndInRange = endPeriodTime >= time
+// 交易时间段
+isInRange = isStartPeriodEnabledAndInRange and isEndPeriodEnabledAndInRange
+// 杠杆
+input_leverage = input.float(1.5, title = "杠杆倍数", step = 0.5)
+// 交易类型
+tradeType = input.string("双向开仓", title="交易方向", options=["双向开仓", "只做多", "只做空"])
+// 移动止盈止损
+stop_type = input.string("移动止盈", title="止盈止损方式", options=["移动止盈", "固定止盈"])
+
+// 肯特纳通道指标
+kenLength = input.int(20, minval=1, title='KTN长度')
+mult = input.float(2.0, title='KTN倍数')
+src = close
+atrlength = input(10, "ATR长度", display = display.data_window)
+esma(source, length)=>
+	e = ta.ema(source, length)
+	e
+basis = esma(src, kenLength)
+rangema = ta.atr(atrlength)
+upper = basis + rangema * mult
+lower = basis - rangema * mult
+plot(upper, color=#2962FF, title="Upper")
+plot(basis, color=#2962FF, title="Basis")
+plot(lower, color=#2962FF, title="Lower")
+
+// 乖离
+guaili = (close - ta.ema(close, 12)) / ta.ema(close, 12) * 100
+// 计算K线的涨跌幅
+chg = ta.roc(close, 15)
+
+// 计算实体大小
+bodySize = math.abs(close-open)
+bodySize1 = math.abs(close[1]-open[1])
+
+
+// 初始化最后平仓的 bar 索引
+var lastExitBar = 0
+var long_bar = 0
+var short_bar = 0
+
+// 在平仓时更新最后平仓的 bar 索引
+if strategy.position_size != 0
+    lastExitBar := bar_index
+
+
+gl_high = ta.highest(guaili, 10)
+gl_low = ta.lowest(guaili, 10)
+// plot(lastExitBar, title = 'lastExitBar')
+// plot(bar_index, title = 'bar_index')
+// plot(chg, title = 'chg')
+
+volEma = ta.ema(volume, 20)
+
+// eth 2.5  btc 1.7
+long_min_guaili = input.float(1.7, title = '做多最小乖离')
+long_max_guaili = input.float(4, title = '做多最大乖离')
+
+// 
+short_min_guaili = input.float(-4, title = '做空最小乖离')
+short_max_guaili = input.float(-1.5, title = '做空最大乖离')
+
+isRiseUpper = 0
+// 最近几根K线是否有跌破下轨的
+isFallLower = 0
+
+long_w1 = (guaili[1] >= long_min_guaili and guaili[1]<=long_max_guaili and guaili[0]<=long_max_guaili+0.5) and (close[1] > upper[1]) and close[1] > open[1] and close[0] > ((close[1]+open[1])/2)
+long_w2 = (guaili[0] >= long_min_guaili and guaili[0]<=long_max_guaili+0.5) and close[0] > upper[0] and close[0] > open[0] and volume > 3*volEma
+
+short_w1 = (guaili[1] <= short_max_guaili and guaili[1]>=short_min_guaili) and close[1] < lower[1] and close[1] < open[1] and close[0] <= ((close[1]+open[1])/2)
+short_w2 = (guaili[0] <= short_max_guaili and guaili[0]>=short_min_guaili - 0.5) and close[0] < lower[0] and close[0] < open[0] and volume > 3*volEma
+
+// 进场信号
+long_signal = (dayofweek != 7 and dayofweek != 1) and (long_w1 or long_w2) and isInRange and strategy.position_size == 0 and tradeType != '只做空' and (bar_index - lastExitBar) > 15
+short_signal = (dayofweek != 7 and dayofweek != 1) and (short_w1 or short_w2) and isInRange and strategy.position_size == 0 and tradeType != '只做多' and (bar_index - lastExitBar) > 15
+
+max_stop_loss_ratio = input.float(2, title = '最大止损比例')/100
+
+if long_signal
+    long_bar := bar_index
+    lastExitBar := bar_index
+    strategy.entry('做多', strategy.long, qty = input_leverage * strategy.equity / close[0], comment='突破做多')
+    sp_diff = (upper[1] - basis[1])
+    stop_loss = close - sp_diff
+    limit = close + sp_diff*1.2
+    // 止损比例
+    stop_loss_ratio = sp_diff / close
+    if stop_loss_ratio > max_stop_loss_ratio
+        stop_loss := close - max_stop_loss_ratio*close[1]
+
+    if stop_type == '移动止盈'
+        strategy.exit('做多平仓', '做多', stop = stop_loss, trail_points = close * stop_loss_ratio / syminfo.mintick, trail_offset = close * 0.002 / syminfo.mintick, comment_profit='做多止盈', comment_loss='做多止损', comment_trailing="移动止盈")
+    else
+        strategy.exit('做多平仓', '做多', stop = stop_loss, limit = limit, comment_profit='做多止盈', comment_loss='做多止损')
+
+if short_signal
+    short_bar := bar_index
+    lastExitBar := bar_index
+    strategy.entry('做空', strategy.short, qty = input_leverage * strategy.equity / close[0], comment='突破做空')
+    // 止损价差
+    sp_diff = (basis[1] - lower[1])
+    stop_loss = close + sp_diff
+    limit = close - sp_diff*1.2
+    // 止损比例
+    stop_loss_ratio = sp_diff / close
+    if stop_loss_ratio > max_stop_loss_ratio
+        stop_loss := close + max_stop_loss_ratio*close[1]
+    if stop_type == '移动止盈'
+        strategy.exit('做空平仓', '做空', stop = stop_loss, trail_points = close * stop_loss_ratio / syminfo.mintick, trail_offset = close * 0.002 / syminfo.mintick, comment_profit='做空止盈', comment_loss='做空止损', comment_trailing="移动止盈")
+    else
+        strategy.exit('做空平仓', '做空', stop = stop_loss, limit = limit, comment_profit='做空止盈', comment_loss='做空止损')
+
+
+if strategy.position_size > 0 and (bar_index - long_bar) > 20
+    strategy.close('做多', comment = '做多超时平仓')
+
+
+if strategy.position_size < 0 and (bar_index - short_bar) > 20
+    strategy.close('做空', comment = '做空超时平仓')
+    
+
+
+
+
+

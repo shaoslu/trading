@@ -1,0 +1,27 @@
+
+study("Chandelier Stop", overlay=true)
+
+
+atr_group = 'ATR止盈'
+trail_Length=input(title="历史周期", type=integer, defval=22)
+trail_ATRPeriod=input(title="ATR周期", type=integer, defval=22)
+trail_Mult=input(title="ATR倍数", type=integer, defval=3)
+
+//calculate stop value
+short_stop = lowest(Length)+Mult*atr(ATRPeriod)
+long_stop  = highest(Length)-Mult*atr(ATRPeriod)
+
+shortvs=na(shortvs[1]) ? short_stop : iff(close>shortvs[1], short_stop , min(short_stop,shortvs[1]))
+longvs=na(longvs[1]) ? long_stop : iff(close<longvs[1], long_stop, max(long_stop,longvs[1]))
+
+longswitch=iff (close>=shortvs[1] and close[1]<shortvs[1] , 1 ,  0)
+shortswitch=iff (close<=longvs[1] and close[1]>longvs[1] ,  1 ,  0)
+
+direction= iff(na(direction[1]), 0, 
+			iff (direction[1]<=0 and longswitch, 1, 
+			iff (direction[1]>=0 and shortswitch, -1, direction[1])))
+			
+pc=direction>0?longvs:shortvs
+
+plot(pc, color=direction>0?aqua:fuchsia, style=circles, linewidth=2)
+plot(pc, color=direction>0?aqua:fuchsia, style=line, linewidth=2)
